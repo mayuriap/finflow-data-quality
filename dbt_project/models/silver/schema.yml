@@ -1,0 +1,24 @@
+yamlversion: 2
+
+models:
+  - name: clean_transactions
+    description: "Cleaned and deduplicated transactions — Silver layer"
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: amount
+        tests:
+          - not_null
+      - name: currency
+        tests:
+          - accepted_values:
+              values: ['USD','GBP','EUR','JPY','CHF','AUD','CAD','HKD']
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['COMPLETED','PENDING','FAILED','CANCELLED','PROCESSING']
+      - name: is_completed
+        tests:
+          - not_null

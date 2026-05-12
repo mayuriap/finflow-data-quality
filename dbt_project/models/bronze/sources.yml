@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: raw
+    database: FINFLOW_DB
+    schema: RAW
+    description: "Raw tables loaded by PySpark Bronze ETL"
+
+    tables:
+      - name: transactions
+        description: "Raw financial transactions"
+        columns:
+          - name: transaction_id
+            tests:
+              - not_null
+          - name: _ingestion_timestamp
+            tests:
+              - not_null
+
+      - name: customers
+        description: "Customer dimension raw data"
+        columns:
+          - name: customer_id
+            tests:
+              - not_null
+              - unique
+
