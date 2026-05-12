@@ -260,7 +260,10 @@ def run_all(bronze_dir: str = "./data/bronze"):
     print("=" * 55 + "\n")
     return overall_pass
 
-
 if __name__ == "__main__":
-    success = run_all()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bronze-dir", default="./data/bronze")
+    args = parser.parse_args()
+    success = run_all(args.bronze_dir)
     sys.exit(0 if success else 1)

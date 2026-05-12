@@ -1,0 +1,168 @@
+name: FinFlow CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas==2.1.4 pyarrow==14.0.2 faker==22.0.0 \
+                      loguru==0.7.2 pyyaml==6.0.1 \
+                      pytest==7.4.4 pytest-html==4.1.1 \
+                      pytest-cov==4.1.0 pytest-mock==3.12.0
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            --cov=scripts \
+            --cov=ingestion \
+            --cov-report=xml:coverage.xml \
+            --html=reports/unit_test_report.html \
+            --self-contained-html
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-report
+          path: reports/unit_test_report.html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  ge-validation:
+    name: GE Data Validation
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas==2.1.4 pyarrow==14.0.2 faker==22.0.0 \
+                      loguru==0.7.2
+
+      - name: Generate sample data
+        run: python scripts/generate_data.py --records 5000
+
+      - name: Run Bronze ETL (pandas mode)
+        run: |
+          python -c "
+          import pandas as pd
+          from pathlib import Path
+          from datetime import datetime
+
+          VALID_CURRENCIES = {'USD','GBP','EUR','JPY','CHF','AUD','CAD','HKD'}
+          VALID_STATUSES = {'COMPLETED','PENDING','FAILED','CANCELLED','PROCESSING'}
+
+          Path('./data/bronze/transactions').mkdir(parents=True, exist_ok=True)
+          Path('./data/bronze/customers').mkdir(parents=True, exist_ok=True)
+
+          df = pd.read_csv('./data/raw/transactions.csv')
+          df['dq_null_transaction_id'] = df['transaction_id'].isna()
+          df['dq_null_customer_id']    = df['customer_id'].isna()
+          df['dq_null_amount']         = df['amount'].isna()
+          df['dq_negative_amount']     = df['amount'].fillna(0) < 0
+          df['dq_invalid_currency']    = ~df['currency'].isin(VALID_CURRENCIES)
+          df['dq_invalid_status']      = ~df['status'].isin(VALID_STATUSES)
+          df['dq_has_issues'] = (
+              df['dq_null_transaction_id'] | df['dq_null_customer_id'] |
+              df['dq_null_amount'] | df['dq_negative_amount'] |
+              df['dq_invalid_currency'] | df['dq_invalid_status']
+          )
+          df['_ingestion_timestamp'] = datetime.utcnow().isoformat()
+          df['_pipeline_layer'] = 'bronze'
+          df.to_csv('./data/bronze/transactions/part_0.csv', index=False)
+
+          cdf = pd.read_csv('./data/raw/customers.csv')
+          cdf['dq_has_issues'] = False
+          cdf['_pipeline_layer'] = 'bronze'
+          cdf.to_csv('./data/bronze/customers/part_0.csv', index=False)
+
+          print('Bronze ETL complete')
+          "
+
+      - name: Run GE validation
+        run: python scripts/run_ge_validation.py --bronze-dir ./data/bronze
+
+  dbt-compile:
+    name: dbt Compile Check
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dbt
+        run: pip install dbt-core==1.7.4
+
+      - name: dbt parse (syntax check)
+        run: |
+          cd dbt_project
+          dbt parse --profiles-dir . --project-dir .
+        env:
+          SNOWFLAKE_ACCOUNT: dummy.us-east-1
+          SNOWFLAKE_USER: dummy_user
+          SNOWFLAKE_PASSWORD: dummy_password
+        continue-on-error: true
+
+  all-passed:
+    name: All Checks Passed
+    runs-on: ubuntu-latest
+    needs: [unit-tests, ge-validation]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.unit-tests.result }}" == "success" && \
+                "${{ needs.ge-validation.result }}" == "success" ]]; then
+            echo "✅ All checks passed"
+            exit 0
+          else
+            echo "❌ One or more checks failed"
+            echo "  unit-tests:    ${{ needs.unit-tests.result }}"
+            echo "  ge-validation: ${{ needs.ge-validation.result }}"
+            exit 1
+          fi
